@@ -204,6 +204,7 @@ func getNode(ctx caddy.Context, name string) (*tailscaleNode, error) {
 
 		return &tailscaleNode{
 			s,
+			make(map[string]*tsnetServerListener),
 		}, nil
 	})
 	if err != nil {
@@ -305,6 +306,7 @@ func getWebUI(name string, app *App) bool {
 // This node can listen on the tailscale network interface, or be used to connect to other nodes in the tailnet.
 type tailscaleNode struct {
 	*tsnet.Server
+	listeners map[string]*tsnetServerListener
 }
 
 func (t tailscaleNode) Destruct() error {
@@ -312,6 +314,18 @@ func (t tailscaleNode) Destruct() error {
 }
 
 func (t *tailscaleNode) Listen(network string, addr string) (net.Listener, error) {
+	// Check if a listener already exists for this address and close it before creating a new one.
+	if l, ok := t.listeners[addr]; ok { // TODO: check network too
+		caddy.Log().Warn("Temporarily closing Tailscale listener before creating a new one")
+
+		// Avoid node shutdown by closing inner listener and setting closed to true.
+		if err := l.Listener.Close(); err != nil {
+			return nil, err
+		}
+		l.closed = true
+		delete(t.listeners, addr)
+	}
+
 	ln, err := t.Server.Listen(network, addr)
 	if err != nil {
 		return nil, err
@@ -319,13 +333,16 @@ func (t *tailscaleNode) Listen(network string, addr string) (net.Listener, error
 	serverListener := &tsnetServerListener{
 		name:     t.Hostname,
 		Listener: ln,
+		closed:   false,
 	}
+	t.listeners[addr] = serverListener
 	return serverListener, nil
 }
 
 type tsnetServerListener struct {
 	name string
 	net.Listener
+	closed bool // remember if we've already closed this listener
 }
 
 func (t *tsnetServerListener) Unwrap() net.Listener {
@@ -336,6 +353,10 @@ func (t *tsnetServerListener) Unwrap() net.Listener {
 }
 
 func (t *tsnetServerListener) Close() error {
+	if t.closed {
+		return nil
+	}
+
 	if err := t.Listener.Close(); err != nil {
 		return err
 	}
@@ -343,6 +364,8 @@ func (t *tsnetServerListener) Close() error {
 	// Decrement usage count of this node.
 	// If usage reaches zero, then the node is actually shutdown.
 	_, err := nodes.Delete(t.name)
+
+	t.closed = true
 	return err
 }
 

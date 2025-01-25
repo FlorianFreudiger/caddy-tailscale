@@ -322,8 +322,17 @@ func Test_Listen(t *testing.T) {
 	if !exists && count != 1 {
 		t.Fatal("reference doesn't exist")
 	}
-	ln.Close()
 
+	ln, err = node.Listen("tcp", ":80")
+	if err != nil {
+		t.Fatal("failed to listen again", err)
+	}
+	count, exists = nodes.References("testhost")
+	if !exists && count != 1 {
+		t.Fatal("reference doesn't exist")
+	}
+
+	ln.Close()
 	count, exists = nodes.References("testhost")
 	if exists && count != 0 {
 		t.Fatal("reference exists when it shouldn't")
